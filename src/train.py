@@ -1,11 +1,14 @@
-"""This is supposed to be run from the root directory of the project (where scripts/ is)"""
 import torch
+from torch.utils.data import DataLoader
 import yaml
 from argparse import Namespace, ArgumentParser
-from tqdm import tqdm
 import os
 import wandb
-
+from data import prepare_data, CreateDataset
+from model import AstroCLR
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.loggers import WandbLogger
 
 parser = ArgumentParser()
 parser.add_argument(
@@ -13,7 +16,7 @@ parser.add_argument(
 )
 parser.add_argument("--device", "-dev", type=str, help="device to run on")
 parser.add_argument(
-    "--root", "-r", type=str, help="logdir", default="./results"
+    "--root", "-r", type=str, help="logdir", default="../results"
 )
 parser.add_argument("--name", "-n", type=str, help="name of run", default=None)
 
@@ -24,107 +27,66 @@ if __name__ == "__main__":
 
     result_dir = f"{script_args.root}/{script_args.experiment_name}"
     run_args_file = f"{result_dir}/args.yaml"
+    print(run_args_file)
     with open(run_args_file, "r") as f:
         args = yaml.load(f, Loader=yaml.FullLoader)
     args = Namespace(**args)
     print("Loaded args:", args, "\n")
-    main_task_name = ( 
-        "binding"
-        if "binding" in args.TARGETS_REGRESSION
-        else list(args.TARGETS_REGRESSION.keys())[0]
-    )
 
     if args.WANDB == "true":
         tags = args.TAGS if hasattr(args, "TAGS") else []
-        wandb.init(project="nuclr-mechinterp", tags=tags, dir='/tmp/kitouni', name=script_args.name)
-        wandb.config.update(args)
-        # save code as artifact
-        # wandb.save(f"{root}/scripts")
-        # wandb.save(f"{root}/lib")
+        wandb_logger = WandbLogger(project=args.WANDB_PROJECT_NAME, tags=tags, name=script_args.experiment_name, log_model="all")
+        wandb_logger.experiment.config.update(args)
 
-    data = prepare_nuclear_data(args)
+    data = prepare_data(args)
 
     torch.manual_seed(args.SEED)
-    # setup training data
-    X_train = data.X[data.train_mask]
-    y_train = data.y[data.train_mask]
-    non_nan_targets = ~torch.isnan(y_train.view(-1))
-    X_train = X_train[non_nan_targets]
-    y_train = y_train[non_nan_targets]
 
-    def quick_eval(model, task_name=None, train=True):
-        if train:
-            X = X_train
-            y = y_train
-        else:
-            X = data.X[data.val_mask]
-            y = data.y[data.val_mask]
-        
-        nan_mask = torch.isnan(y.view(-1))
-        X = X[~nan_mask]
-        y = y[~nan_mask]
-        if task_name is not None:
-            task_idx = list(data.output_map.keys()).index(task_name)
-            mask = X[:, 2].long() == task_idx
-            X = X[mask]
-            y = y[mask]
-        preds = model(X)
-        rms = torch.sqrt(torch.nn.functional.mse_loss(preds, y))
-        return rms
+    X_train_xray = data.X_train_cat1
+    X_train_optical = data.X_train_cat2
+    Y_train = data.y_train
 
+    X_ev_xray = data.X_ev_cat1
+    X_ev_optical = data.X_ev_cat2
+    Y_ev = data.y_ev
 
-    new_model, optim = get_model_and_optim(data, args)
+    # to torch dataset
+    train_ds = CreateDataset(
+        X_train_xray,
+        X_train_optical,
+        Y_train,
+        columns_xray=args.FEAT_XRAY,
+        columns_optical=args.FEAT_OPTICAL
+    )
 
-    # shuffle indices to make batches
-    indices = torch.arange(X_train.shape[0])
+    eval_ds = CreateDataset(
+        X_ev_xray,
+        X_ev_optical,
+        Y_ev,
+        columns_xray=args.FEAT_XRAY,
+        columns_optical=args.FEAT_OPTICAL
+    )
 
-    # train the new model
-    loss_weights = 1 / torch.tensor(
-        list(args.TARGETS_REGRESSION.values()), device=X_train.device
-    ).view(-1)
+    train_loader = DataLoader(train_ds, batch_size=args.BATCH_SIZE, num_workers=7, shuffle=True, drop_last=True)
+    val_loader = DataLoader(eval_ds, batch_size=args.BATCH_SIZE, num_workers=7, drop_last=True)
+    # assuming args is already defined
+    # model and data preparation
+    model = AstroCLR(X_train_xray.shape[1], X_train_optical.shape[1], args.EMB_DIM)
 
-    pbar = range(args.EPOCHS)
-    if args.VERBOSITY > 1:
-        pbar = tqdm(pbar)
-    bs = args.BATCH_SIZE if args.BATCH_SIZE > 1 else int(X_train.shape[0] * args.BATCH_SIZE)
-    for epoch in pbar:
-        torch.randperm(X_train.shape[0], out=indices)
-        for batch_idx in range(0, X_train.shape[0]//bs * bs, bs):
-            batch = indices[batch_idx : batch_idx + bs]
-            X_batch = X_train[batch]
-            y_batch = y_train[batch]
+    # callbacks
+    checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(result_dir, "ckpts"), save_top_k=3, monitor="val_loss")
+    early_stopping_callback = EarlyStopping(monitor="val_loss", patience=10)
 
-            optim.zero_grad()
-            loss = torch.nn.functional.mse_loss(new_model(X_batch), y_batch, reduction="none")
-            weights = loss_weights[X_batch[:, [2]].long()]
-            loss = (loss * weights).mean()
-            loss.backward()
-            optim.step()
-            if args.VERBOSITY > 1:
-                pbar.set_description(f"Epoch {epoch}: {loss.item():.2e}")
+    # training
+    trainer = pl.Trainer(
+        max_epochs=args.EPOCHS,
+        logger=wandb_logger if args.WANDB == "true" else False,
+        callbacks=[checkpoint_callback, early_stopping_callback],
+        log_every_n_steps=args.LOG_INTERVAL,
+        accelerator=args.DEV
+    )
 
-            if args.WANDB == "true":
-                wandb.log({"train/loss": loss.item()})
+    trainer.fit(model, train_loader, val_loader)
 
-        if epoch % (args.EPOCHS // args.LOG_TIMES) == 0 and args.VERBOSITY > 0:
-            print(f"Epoch {epoch}: {loss.item():.2f}")
-            train_rms = quick_eval(new_model, main_task_name, train=True)
-            print(f"Train RMS: {train_rms:.2f}", end=" ")
-            if args.WANDB == "true":
-                wandb.log({f"train/{main_task_name}/rms": train_rms[0]})
-            if data.val_mask.sum() > 0:
-                val_rms = quick_eval(
-                    new_model, main_task_name, train=False
-                )
-                print(f"Val RMS: {val_rms:.2f}")
-                if args.WANDB == "true":
-                    wandb.log({f"val/{main_task_name}/rms": val_rms[0]})
-        if epoch % (args.EPOCHS // args.SAVE_CKPT) ==0:
-            os.makedirs(f"{result_dir}/ckpts", exist_ok=True)
-            torch.save(
-                new_model.state_dict(), f"{result_dir}/ckpts/model-{epoch}.pt"
-            )
-
-    # save model
-    torch.save(new_model.state_dict(), f"{result_dir}/ckpts/model.pt")
-    IO.save_args(args, f"{result_dir}/args.yaml")
+    # save final model
+    trainer.save_checkpoint(os.path.join(result_dir, "final_model.ckpt"))

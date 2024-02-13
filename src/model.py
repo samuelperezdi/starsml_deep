@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
+from loss import CLIPLoss
 
 class MLP(torch.nn.Sequential):
     def __init__(self, input_dim, hidden_dim, num_hidden, dropout=0.0):
@@ -37,7 +38,7 @@ class AstroCLR(pl.LightningModule):
         super().__init__()
         self.catalog1_encoder = catalog1_encoder if catalog1_encoder else MLP(catalog1_input_dim, emb_dim, num_hidden, dropout)
         self.catalog2_encoder = catalog2_encoder if catalog2_encoder else MLP(catalog2_input_dim, emb_dim, num_hidden, dropout)
-        self.pretraining_head = pretraining_head if pretraining_head else MLP(2 * emb_dim, emb_dim, head_depth, dropout)
+        self.pretraining_head = pretraining_head if pretraining_head else MLP(emb_dim, emb_dim, head_depth, dropout)
 
         self._init_weights()
 
@@ -51,12 +52,26 @@ class AstroCLR(pl.LightningModule):
         emb_catalog1 = self.catalog1_encoder(catalog1_input)
         emb_catalog2 = self.catalog2_encoder(catalog2_input)
 
-        # Concatenate embeddings before passing to pretraining head
-        combined_embeddings = torch.cat((emb_catalog1, emb_catalog2), dim=1)
-        embeddings = self.pretraining_head(combined_embeddings)
+        embeddings_catalog1 = self.pretraining_head(emb_catalog1)
+        embeddings_catalog2 = self.pretraining_head(emb_catalog2)
+        return embeddings_catalog1, embeddings_catalog2 
 
-        return embeddings
-
+    def training_step(self, batch, batch_idx):
+        xray_batch, optical_batch = batch
+        embeddings_catalog1, embeddings_catalog2 = self(xray_batch, optical_batch)
+        clip_loss = CLIPLoss()
+        loss = clip_loss(embeddings_catalog1, embeddings_catalog2)
+        self.log('train_loss', loss)
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        xray_batch, optical_batch = batch
+        embeddings_catalog1, embeddings_catalog2 = self(xray_batch, optical_batch)
+        clip_loss = CLIPLoss()
+        val_loss = clip_loss(embeddings_catalog1, embeddings_catalog2)
+        self.log('val_loss', val_loss)
+        return val_loss
+    
     def get_embeddings(self, catalog1_input, catalog2_input):
         with torch.no_grad():
             emb_catalog1 = self.catalog1_encoder(catalog1_input)
@@ -64,5 +79,5 @@ class AstroCLR(pl.LightningModule):
         return emb_catalog1, emb_catalog2
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=5e-4)
         return optimizer
