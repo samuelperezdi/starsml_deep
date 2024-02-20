@@ -9,9 +9,9 @@ import argparse
 
 class CreateDataset(Dataset):
     def __init__(self, xray_data, optical_data, target, columns_xray=None, columns_optical=None):
-        self.xray_data = np.array(xray_data)
-        self.optical_data = np.array(optical_data)
-        self.target = np.array(target)
+        self.xray_data = np.array(xray_data.cpu())
+        self.optical_data = np.array(optical_data.cpu())
+        self.target = np.array(target.cpu())
         self.columns_xray = columns_xray
         self.columns_optical = columns_optical
 

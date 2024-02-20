@@ -3,3 +3,5 @@ results/
 wandb/
 __pycache__/
 lightning_logs/
+*.out
+*.txt

@@ -61,7 +61,7 @@ class AstroCLR(pl.LightningModule):
         embeddings_catalog1, embeddings_catalog2 = self(xray_batch, optical_batch)
         clip_loss = CLIPLoss()
         loss = clip_loss(embeddings_catalog1, embeddings_catalog2)
-        self.log('train_loss', loss)
+        self.log('train_loss', loss, prog_bar=True, on_step=False, on_epoch=True)
         return loss
     
     def validation_step(self, batch, batch_idx):
@@ -69,7 +69,7 @@ class AstroCLR(pl.LightningModule):
         embeddings_catalog1, embeddings_catalog2 = self(xray_batch, optical_batch)
         clip_loss = CLIPLoss()
         val_loss = clip_loss(embeddings_catalog1, embeddings_catalog2)
-        self.log('val_loss', val_loss)
+        self.log('val_loss', val_loss, prog_bar=True, on_step=False, on_epoch=True)
         return val_loss
     
     def get_embeddings(self, catalog1_input, catalog2_input):

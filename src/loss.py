@@ -23,7 +23,7 @@ class CLIPLoss(nn.Module):
         cat2_features: torch.Tensor, 
         logit_scale: float = 1.0, 
         output_dict: bool = False
-    ) -> torch.Tensor | dict[str, torch.Tensor]:
+    ):
         # calculate logits
         logits_cat1, logits_cat2 = self._get_normalized_logits(cat1_features, cat2_features, logit_scale)
         

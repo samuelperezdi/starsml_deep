@@ -10,6 +10,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 
+os.environ["WANDB_MODE"] = "offline"
+
 parser = ArgumentParser()
 parser.add_argument(
     "--experiment_name", "-exp", type=str, help="name of experiment to load"
@@ -67,21 +69,21 @@ if __name__ == "__main__":
         columns_optical=args.FEAT_OPTICAL
     )
 
-    train_loader = DataLoader(train_ds, batch_size=args.BATCH_SIZE, num_workers=7, shuffle=True, drop_last=True)
-    val_loader = DataLoader(eval_ds, batch_size=args.BATCH_SIZE, num_workers=7, drop_last=True)
+    train_loader = DataLoader(train_ds, batch_size=args.BATCH_SIZE, shuffle=True, drop_last=True)
+    val_loader = DataLoader(eval_ds, batch_size=args.BATCH_SIZE, drop_last=True)
     # assuming args is already defined
     # model and data preparation
     model = AstroCLR(X_train_xray.shape[1], X_train_optical.shape[1], args.EMB_DIM)
 
     # callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=os.path.join(result_dir, "ckpts"), save_top_k=3, monitor="val_loss")
-    early_stopping_callback = EarlyStopping(monitor="val_loss", patience=10)
+    #early_stopping_callback = EarlyStopping(monitor="val_loss", patience=10)
 
     # training
     trainer = pl.Trainer(
         max_epochs=args.EPOCHS,
         logger=wandb_logger if args.WANDB == "true" else False,
-        callbacks=[checkpoint_callback, early_stopping_callback],
+        callbacks=[checkpoint_callback],
         log_every_n_steps=args.LOG_INTERVAL,
         accelerator=args.DEV
     )
