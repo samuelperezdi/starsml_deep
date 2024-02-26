@@ -13,4 +13,4 @@
 #module load miniconda3/4.8.3
 #source activate /datacnmat01/macc/usuarios/victor.perez/.conda/envs/cross-matching
 
-srun python3 train.py -exp run0 -dev gpu
+srun python3 train.py -exp 100kepochs -dev gpu
